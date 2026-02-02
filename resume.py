@@ -1578,19 +1578,13 @@ def download_fonts():
     # Dictionary of "Target Filename" -> [List of Mirror URLs]
     font_sources = {
         "arial.ttf": [
-            "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Regular.ttf",
-            "https://cdn.jsdelivr.net/gh/google/fonts@main/apache/roboto/Roboto-Regular.ttf",
-            "https://raw.githubusercontent.com/google/fonts/main/apache/roboto/Roboto-Regular.ttf"
+            "https://github.com/unknownperson090909/resume123/blob/a102a677d2217ec3798644b055a11cec6376aea2/arial.ttf",
         ],
         "arialbd.ttf": [
-            "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf",
-            "https://cdn.jsdelivr.net/gh/google/fonts@main/apache/roboto/Roboto-Bold.ttf",
-            "https://raw.githubusercontent.com/google/fonts/main/apache/roboto/Roboto-Bold.ttf"
+            "https://github.com/unknownperson090909/resume123/blob/a102a677d2217ec3798644b055a11cec6376aea2/arialbd.ttf",
         ],
         "impact.ttf": [
-            "https://github.com/google/fonts/raw/main/ofl/oswald/Oswald-Bold.ttf",
-            "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/oswald/Oswald-Bold.ttf",
-            "https://raw.githubusercontent.com/google/fonts/main/ofl/oswald/Oswald-Bold.ttf"
+            "https://github.com/unknownperson090909/resume123/blob/a102a677d2217ec3798644b055a11cec6376aea2/impact.ttf",
         ]
     }
 
@@ -14614,4 +14608,5 @@ if __name__ == "__main__":
     main()
 else:
     # Agar ye file import ho rahi hai, tab bhi fonts check karo
+
     download_fonts()s
