@@ -1,0 +1,58 @@
+[
+  {
+    "match_id": "-1003636955983_1766340202",
+    "group_id": -1003636955983,
+    "group_name": "GAMING ZONE \ud83c\udfae",
+    "date": "2025-12-21T23:33:22.408225",
+    "overs": 4,
+    "winner": "Team Y",
+    "loser": "Team X",
+    "team_x_score": 12,
+    "team_x_wickets": 1,
+    "team_y_score": 22,
+    "team_y_wickets": 1,
+    "total_balls": 15
+  },
+  {
+    "match_id": "-1002209386037_1766393635",
+    "group_id": -1002209386037,
+    "group_name": "ASIAN PREMIERE LEAGUE",
+    "date": "2025-12-22T14:23:55.291109",
+    "overs": 4,
+    "winner": "Team Y",
+    "loser": "Team X",
+    "team_x_score": 0,
+    "team_x_wickets": 1,
+    "team_y_score": 3,
+    "team_y_wickets": 0,
+    "total_balls": 4
+  },
+  {
+    "match_id": "-1002209386037_1766394235",
+    "group_id": -1002209386037,
+    "group_name": "ASIAN PREMIERE LEAGUE",
+    "date": "2025-12-22T14:33:55.660026",
+    "overs": 4,
+    "winner": "Team Y",
+    "loser": "Team X",
+    "team_x_score": 18,
+    "team_x_wickets": 1,
+    "team_y_score": 22,
+    "team_y_wickets": 1,
+    "total_balls": 14
+  },
+  {
+    "match_id": "-1002707382739_1766397865",
+    "group_id": -1002707382739,
+    "group_name": "ONLY SHU\u00dfH and JHANVI \u2604",
+    "date": "2025-12-22T15:34:25.842048",
+    "overs": 4,
+    "winner": "TIE",
+    "loser": "TIE",
+    "team_x_score": 20,
+    "team_x_wickets": 1,
+    "team_y_score": 20,
+    "team_y_wickets": 1,
+    "total_balls": 17
+  }
+]
