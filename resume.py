@@ -62,7 +62,7 @@ except:
     FONT_PATH = None # Fallback
 
 # CRITICAL: Set your bot token and owner ID here
-BOT_TOKEN = "8428604292:AAGOkKYweTyb-moVTMPCrQkAgRPwIhQ1s5k"
+BOT_TOKEN = "8428604292:AAFkogxA9yUKMSO9uhPX-9s0DjBKzVceW3U"
 OWNER_ID = 7460266461  # Replace with your Telegram user ID
 SECOND_APPROVER_ID = 7343683772 
 SUPPORT_GROUP_ID = -1002707382739  # Replace with your support group ID
@@ -14611,4 +14611,5 @@ if __name__ == "__main__":
     main()
 else:
     # Agar ye file import ho rahi hai, tab bhi fonts check karo
+
     download_fonts()
