@@ -1578,13 +1578,19 @@ def download_fonts():
     # Dictionary of "Target Filename" -> [List of Mirror URLs]
     font_sources = {
         "arial.ttf": [
-            "https://github.com/unknownperson090909/resume123/blob/a102a677d2217ec3798644b055a11cec6376aea2/arial.ttf",
+            "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Regular.ttf",
+            "https://cdn.jsdelivr.net/gh/google/fonts@main/apache/roboto/Roboto-Regular.ttf",
+            "https://raw.githubusercontent.com/google/fonts/main/apache/roboto/Roboto-Regular.ttf"
         ],
         "arialbd.ttf": [
-            "https://github.com/unknownperson090909/resume123/blob/a102a677d2217ec3798644b055a11cec6376aea2/arialbd.ttf",
+            "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf",
+            "https://cdn.jsdelivr.net/gh/google/fonts@main/apache/roboto/Roboto-Bold.ttf",
+            "https://raw.githubusercontent.com/google/fonts/main/apache/roboto/Roboto-Bold.ttf"
         ],
         "impact.ttf": [
-            "https://github.com/unknownperson090909/resume123/blob/a102a677d2217ec3798644b055a11cec6376aea2/impact.ttf",
+            "https://github.com/google/fonts/raw/main/ofl/oswald/Oswald-Bold.ttf",
+            "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/oswald/Oswald-Bold.ttf",
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/oswald/Oswald-Bold.ttf"
         ]
     }
 
@@ -14076,14 +14082,11 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
             del processing_commands[group_id]
         
         await query.edit_message_text(
-            "🏁 <b>MATCH ENDED!</b>
+            "🏁 <b>MATCH ENDED!</b>\n\n"
 
-"
-            "⚠️ Match was forcefully stopped.
-"
-            "❌ Stats were NOT saved.
+            "⚠️ Match was forcefully stopped.\n"
+            "❌ Stats were NOT saved.\n\n"
 
-"
             "🎮 Use /game to start a new match!",
             parse_mode=ParseMode.HTML
         )
@@ -14094,8 +14097,8 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
     # ==========================================
     elif data == "cancel_endmatch":
         await query.edit_message_text(
-            "▶ <b>Match Continues!</b>
-"
+            "▶ <b>Match Continues!</b>\n"
+            "Game is still active — play on! ⚡",
             "Game is still active — play on! ⚡",
             parse_mode=ParseMode.HTML
         )
@@ -14608,5 +14611,4 @@ if __name__ == "__main__":
     main()
 else:
     # Agar ye file import ho rahi hai, tab bhi fonts check karo
-
-    download_fonts()s
+    download_fonts()
