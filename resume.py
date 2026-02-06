@@ -12149,7 +12149,7 @@ async def assist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"━━━━━━━━━━━━━━━━━━━━━━━\n\n",
             f"🏏 <b>Team:</b> {team_name}\n",
             f"👤 <b>Bidder:</b> {target_tag}\n\n",
-            f"{'🎤 Auctioneer can bid on their behalf!\n👤 Bidder can also bid using /bid [amount]!' if not current else '❌ Assist mode turned off.'}\n\n",
+            f"{'🎤 Auctioneer can bid on their behalf!\n👤 Bidder can also bid using bid [amount]!' if not current else '❌ Assist mode turned off.'}\n\n",
             f"━━━━━━━━━━━━━━━━━━━━━━━",
             parse_mode=ParseMode.HTML
         )
