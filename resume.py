@@ -12143,13 +12143,14 @@ async def assist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = "ENABLED" if not current else "DISABLED"
         emoji = "✅" if not current else "❌"
         target_tag = f"<a href='tg://user?id={target_user.id}'>{target_user.first_name}</a>"
+        assist_message = '🎤 Auctioneer can bid on their behalf!\n👤 Bidder can also bid using bid [amount]!' if not current else '❌ Assist mode turned off.'
         
         await update.message.reply_text(
-            f"{emoji} <b>ASSIST MODE {status}!</b>\n",
-            f"━━━━━━━━━━━━━━━━━━━━━━━\n\n",
-            f"🏏 <b>Team:</b> {team_name}\n",
-            f"👤 <b>Bidder:</b> {target_tag}\n\n",
-            f"{'🎤 Auctioneer can bid on their behalf!\n👤 Bidder can also bid using bid [amount]!' if not current else '❌ Assist mode turned off.'}\n\n",
+            f"{emoji} <b>ASSIST MODE {status}!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🏏 <b>Team:</b> {team_name}\n"
+            f"👤 <b>Bidder:</b> {target_tag}\n\n"
+            f"{assist_message}\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━",
             parse_mode=ParseMode.HTML
         )
