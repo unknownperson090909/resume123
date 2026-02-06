@@ -1,9 +1,21 @@
 {
+  "-1003861460052": {
+    "group_id": -1003861460052,
+    "group_name": "Gully Auction {HOMMIES}",
+    "total_matches": 0,
+    "commentary_style": "english"
+  },
   "-1003815040840": {
     "group_id": -1003815040840,
     "group_name": "bawali gend",
     "total_matches": 0,
     "commentary_style": "english"
+  },
+  "-1003792848917": {
+    "group_id": -1003792848917,
+    "group_name": "Team SceneIlla gc",
+    "total_matches": 0,
+    "commentary_style": "sidhu"
   },
   "-1003697886233": {
     "group_id": -1003697886233,
@@ -16,6 +28,12 @@
     "group_name": "GAMING ZONE \ud83c\udfae",
     "total_matches": 1,
     "commentary_style": "sidhu"
+  },
+  "-1003636328969": {
+    "group_id": -1003636328969,
+    "group_name": "\ud835\udc02\ud835\udc11\ud835\udc08\ud835\udc02\ud835\udc19\ud835\udc0e\ud835\udc0d\ud835\udc04 \ud835\udc02\ud835\udc11\ud835\udc08\ud835\udc02\ud835\udc0a\ud835\udc04\ud835\udc13",
+    "total_matches": 0,
+    "commentary_style": "english"
   },
   "-1003633412134": {
     "group_id": -1003633412134,
@@ -93,11 +111,23 @@
     "group_name": "\ud83e\udd97 CRICKET \ud83e\udd97 GC\ud83e\udd97",
     "total_matches": 0
   },
+  "-1003506233903": {
+    "group_id": -1003506233903,
+    "group_name": "Kala Jadu knight riders ( KJKR)",
+    "total_matches": 0,
+    "commentary_style": "english"
+  },
   "-1003502370796": {
     "group_id": -1003502370796,
     "group_name": "CHAMPIONS TROPHY (CT)",
     "total_matches": 0,
     "commentary_style": "hinglish"
+  },
+  "-1003502104542": {
+    "group_id": -1003502104542,
+    "group_name": "\ud835\udc06\ud835\udc1a\ud835\udc26\ud835\udc1e \ud835\udc07\ud835\udc22\ud835\udc2f\ud835\udc1e",
+    "total_matches": 0,
+    "commentary_style": "english"
   },
   "-1003478508042": {
     "group_id": -1003478508042,
@@ -149,7 +179,7 @@
     "group_id": -1003334573423,
     "group_name": "Cricoverse Testing",
     "total_matches": 0,
-    "commentary_style": "sidhu"
+    "commentary_style": "hinglish"
   },
   "-1003330645541": {
     "group_id": -1003330645541,
@@ -175,6 +205,18 @@
   "-1003260600131": {
     "group_id": -1003260600131,
     "group_name": "ELITE SUPER SMASH",
+    "total_matches": 0,
+    "commentary_style": "english"
+  },
+  "-1003250080523": {
+    "group_id": -1003250080523,
+    "group_name": "Kei Knockers \ud83d\udee1 (APL)",
+    "total_matches": 0,
+    "commentary_style": "english"
+  },
+  "-1003227489554": {
+    "group_id": -1003227489554,
+    "group_name": "ESSSS!",
     "total_matches": 0,
     "commentary_style": "english"
   },

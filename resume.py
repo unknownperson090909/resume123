@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 # Now import everything else
 import asyncio
 import random
+import math
 import time
 import json
 import sqlite3  # <--- New for SQL
@@ -29,7 +30,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from collections import defaultdict
 from enum import Enum
 from collections import defaultdict
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageChops
 import io
 import requests
 
@@ -2162,7 +2163,7 @@ async def scorecard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     team_x, team_y = match.team_x, match.team_y
 
-    # --- 1. Generate Text Scorecard ---
+    # --- 1. Generate Detailed Text Scorecard ---
     def get_team_text(team):
         # Calc Overs
         balls = getattr(team, 'balls_faced', 0)
@@ -2170,34 +2171,51 @@ async def scorecard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         text = f"🏏 <b>{html.escape(team.name.upper())}</b>\n"
         text += f"💥 <b>{team.score}/{team.wickets}</b>  (Ov: {overs})\n"
+        text += "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
         
-        # Top Performers (Brief)
-        # Sort players by runs to show top scorer
+        # Show ALL players with stats
         sorted_players = sorted(team.players, key=lambda p: getattr(p, 'runs', 0), reverse=True)
         
-        active_batsmen = []
-        for p in sorted_players[:3]: # Show top 3 or currently batting
+        batsmen_shown = 0
+        for p in sorted_players:
             r = getattr(p, 'runs', 0)
             b = getattr(p, 'balls_faced', 0)
+            
+            # Only show players who have batted (runs > 0 or balls > 0)
             if r > 0 or b > 0:
-                status = "out" if getattr(p, 'is_out', False) else "not out"
-                icon = "💀" if status == "out" else "⚡️"
-                active_batsmen.append(f"{icon} {p.first_name}: <b>{r}</b>({b})")
+                # Captain emoji
+                cap_emoji = "🧢 " if getattr(p, 'is_captain', False) else ""
+                
+                # Out status
+                if getattr(p, 'is_out', False):
+                    status = " (Out)"
+                    icon = "💀"
+                else:
+                    status = " (Not Out)"
+                    icon = "⚡"
+                
+                # Strike rate
+                sr = round((r / b) * 100, 1) if b > 0 else 0.0
+                
+                text += f"{icon} {cap_emoji}{p.first_name}: <b>{r}({b})</b> SR: {sr}{status}\n"
+                batsmen_shown += 1
         
-        if active_batsmen:
-            text += "   " + "\n   ".join(active_batsmen) + "\n"
-        else:
+        if batsmen_shown == 0:
             text += "   <i>Innings not started</i>\n"
             
         return text
 
-    msg = "📊 <b>LIVE MATCH CENTER</b>\n"
-    msg += "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
+    msg = "📊 <b>LIVE SCORECARD</b>\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━━\n\n"
     msg += get_team_text(team_x)
-    msg += "\n" + get_team_text(team_y)
+    msg += "\n"
+    msg += get_team_text(team_y)
     
     # Check if match has actually started
-    total_balls = getattr(match.current_bowling_team if hasattr(match, 'current_bowling_team') and match.current_bowling_team else match.team_x, 'balls', 0)
+    total_balls_x = getattr(team_x, 'balls_faced', 0)
+    total_balls_y = getattr(team_y, 'balls_faced', 0)
+    total_balls = max(total_balls_x, total_balls_y)
+    
     if total_balls > 0:
         msg += "\n📈 <i>See graph above for over-by-over analysis.</i>"
     else:
@@ -2212,15 +2230,12 @@ async def scorecard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # If no over data exists yet but match has started, calculate current over progress
         if not runs_x and not runs_y and total_balls > 0:
             # Calculate runs in current incomplete over
-            current_team = match.current_batting_team if hasattr(match, 'current_batting_team') else None
-            if current_team:
-                current_over_balls = total_balls % 6
-                if current_over_balls > 0:
-                    # There's an incomplete over - show it
-                    if match.innings == 1 or not match.is_second_innings:
-                        runs_x = [team_x.score]  # Show current score as first data point
-                    else:
-                        runs_y = [team_y.score]
+            if match.innings == 1 or not hasattr(match, 'is_second_innings') or not match.is_second_innings:
+                # First innings - Team X batting
+                runs_x = [team_x.score]
+            else:
+                # Second innings - Team Y batting
+                runs_y = [team_y.score]
         
         photo = await create_over_by_over_chart_pil(
             team_x.name, team_y.name, runs_x, runs_y
@@ -4563,154 +4578,229 @@ async def batting_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await request_bowler_selection(context, chat.id, match)        
         return
 
-async def create_players_table_image(team_x_name: str, team_x_players: List[Dict],
-                                     team_y_name: str, team_y_players: List[Dict]) -> BytesIO:
-    """
-    GOD-TIER SQUAD GENERATOR v3.0
-    Features: Cyber-Grid BG, Role Icons, Skill Bars, VS Lightning
-    """
+def create_gradient(width, height, start_color, end_color, vertical=True):
+    """Generates a smooth gradient image."""
+    base = Image.new('RGBA', (width, height), start_color)
+    top = Image.new('RGBA', (width, height), end_color)
+    mask = Image.new('L', (width, height))
+    mask_data = []
+    for y in range(height):
+        for x in range(width):
+            if vertical:
+                t = int(255 * (y / height))
+            else:
+                t = int(255 * (x / width))
+            mask_data.append(t)
+    mask.putdata(mask_data)
+    base.paste(top, (0, 0), mask)
+    return base
+
+
+
+async def create_ultimate_squad_image(team_x_name: str, team_x_players: List[Dict],
+                                      team_y_name: str, team_y_players: List[Dict]) -> BytesIO:
     
-    # --- CONFIGURATION ---
-    WIDTH = 1920
-    ROW_HEIGHT = 110
-    HEADER_HEIGHT = 350
+    # --- 1. ENGINE CONFIG ---
+    WIDTH, ROW_HEIGHT = 1920, 140
+    HEADER_HEIGHT = 400
+    FOOTER_HEIGHT = 150
     
-    # Calculate Height
+    # Dynamic height calculation
     num_rows = max(len(team_x_players), len(team_y_players))
-    content_height = HEADER_HEIGHT + (num_rows * ROW_HEIGHT) + 100
-    HEIGHT = max(1080, content_height)
+    HEIGHT = HEADER_HEIGHT + (num_rows * ROW_HEIGHT) + FOOTER_HEIGHT
     
-    # --- PALETTE (Cyber-Warfare Theme) ---
-    C_BG_DEEP = (5, 7, 10)         # Void
-    C_GRID = (255, 255, 255, 15)   # Faint Grid Lines
-    C_VS_GLOW = (255, 255, 255, 50)
-    
-    # Team Colors (Neon)
-    C_NEON_X = (0, 255, 255)       # Cyan
-    C_NEON_Y = (255, 50, 50)       # Red
-    
-    img = Image.new('RGB', (WIDTH, HEIGHT), C_BG_DEEP)
+    # PALETTE: "Cyber-Void"
+    C_BG_TOP = (10, 12, 20)
+    C_BG_BOT = (5, 5, 8)
+    C_TEAM_X = (0, 255, 230)   # Cyber Turquoise
+    C_TEAM_Y = (255, 40, 90)   # Hyper Pink
+    C_TEXT_W = (240, 245, 255)
+    C_HUD_DIM = (255, 255, 255, 40)
+
+    # Base Canvas (Gradient)
+    img = create_gradient(WIDTH, HEIGHT, C_BG_TOP, C_BG_BOT, vertical=True).convert("RGB")
     draw = ImageDraw.Draw(img, 'RGBA')
 
-    # --- FONTS ---
+    # --- 2. FONTS (Fail-safe) ---
     try:
-        f_title = ImageFont.truetype("arialbd.ttf", 90)
-        f_team = ImageFont.truetype("arialbd.ttf", 60)
-        f_name = ImageFont.truetype("arialbd.ttf", 40)
-        f_role = ImageFont.truetype("arial.ttf", 22)
-        f_num = ImageFont.truetype("arialbd.ttf", 30)
+        # Trying to load standard bold fonts, fallback to default
+        f_mega = ImageFont.truetype("arialbd.ttf", 140)
+        f_header = ImageFont.truetype("arialbd.ttf", 70)
+        f_name = ImageFont.truetype("arialbd.ttf", 45)
+        f_meta = ImageFont.truetype("arial.ttf", 22)
+        f_rank = ImageFont.truetype("arialbd.ttf", 35)
     except:
-        f_title = f_team = f_name = f_role = f_num = ImageFont.load_default()
+        f_mega = f_header = f_name = f_meta = f_rank = ImageFont.load_default()
 
-    # --- 1. PROCEDURAL CYBER-GRID BACKGROUND ---
-    # Draw vertical lines
-    for x in range(0, WIDTH, 60):
-        draw.line([(x, 0), (x, HEIGHT)], fill=C_GRID, width=1)
-    # Draw horizontal lines
-    for y in range(0, HEIGHT, 60):
-        draw.line([(0, y), (WIDTH, y)], fill=C_GRID, width=1)
-
-    # --- 2. HEADER & VS EFFECT ---
-    # Title Glow
-    draw.text((WIDTH//2, 80), "ULTIMATE SQUAD REVEAL", fill=(255, 215, 0), font=f_title, anchor="mm")
+    # --- 3. BACKGROUND FX: Tech Grid & Particles ---
+    # Draw perspective grid (Fake 3D floor)
+    horizon_y = HEADER_HEIGHT - 50
+    for i in range(0, WIDTH, 80):
+        # Lines converging to center top
+        draw.line([(i, HEIGHT), (WIDTH//2, -500)], fill=(255,255,255,10), width=1)
     
-    # Central VS Lightning Line
-    mid = WIDTH // 2
-    draw.line([(mid, 200), (mid, HEIGHT-100)], fill=(255,255,255, 80), width=6)
-    # Outer Glow for Line
-    draw.line([(mid, 200), (mid, HEIGHT-100)], fill=(255,255,255, 30), width=20)
-    
-    # "VS" Emblem in Center
-    vs_y = HEADER_HEIGHT - 50
-    draw.ellipse([mid-60, vs_y-60, mid+60, vs_y+60], fill=(0,0,0), outline=(255,255,255), width=3)
-    draw.text((mid, vs_y), "VS", fill=(255, 255, 255), font=f_team, anchor="mm")
+    # Particles (Digital Dust)
+    for _ in range(150):
+        px, py = random.randint(0, WIDTH), random.randint(0, HEIGHT)
+        p_size = random.randint(1, 4)
+        p_alpha = random.randint(50, 200)
+        color = C_TEAM_X if px < WIDTH//2 else C_TEAM_Y
+        draw.ellipse([px, py, px+p_size, py+p_size], fill=(*color, p_alpha))
 
-    # --- 3. TEAM HEADERS ---
-    def draw_team_title(name, x, color, align):
-        # Text
-        anchor = "mm"
-        draw.text((x, 220), name.upper(), fill=color, font=f_team, anchor=anchor)
-        # Underline Decor
-        draw.rectangle([x-150, 260, x+150, 265], fill=color)
+    # --- 4. ADVANCED ASSET GENERATORS ---
 
-    draw_team_title(team_x_name, WIDTH//4, C_NEON_X, "L")
-    draw_team_title(team_y_name, 3*WIDTH//4, C_NEON_Y, "R")
+    def draw_skewed_rect(draw_ctx, x, y, w, h, skew, color, fill_alpha=255):
+        """Draws a futuristic slanted rectangle."""
+        # Coordinates: TL, TR, BR, BL
+        points = [
+            (x + skew, y),
+            (x + w + skew, y),
+            (x + w, y + h),
+            (x, y + h)
+        ]
+        draw_ctx.polygon(points, fill=(*color[:3], fill_alpha))
+        draw_ctx.line(points + [points[0]], fill=(*color[:3], 255), width=2)
 
-    # --- 4. ADVANCED PLAYER CARDS ---
-    
-    def draw_role_icon(draw_ctx, x, y, role, color):
-        """Draws a simple icon based on role"""
-        role = role.upper()
-        if "CAPTAIN" in role:
-            # Crown (Simple Triangle points)
-            points = [(x, y+10), (x+10, y-10), (x+20, y+10), (x+30, y-10), (x+40, y+10)]
-            draw_ctx.polygon(points, fill=color)
-        elif "BAT" in role:
-            # Sword/Bat Shape
-            draw_ctx.rectangle([x+15, y-10, x+25, y+15], fill=color)
-            draw_ctx.rectangle([x+10, y+10, x+30, y+15], fill=color)
-        else:
-            # Ball/Dot
-            draw_ctx.ellipse([x+10, y-5, x+30, y+15], outline=color, width=2)
+    def draw_holo_avatar(draw_ctx, x, y, size, color):
+        """Procedurally draws a sci-fi silhouette avatar."""
+        # Head
+        draw_ctx.ellipse([x + size*0.25, y, x + size*0.75, y + size*0.5], fill=(*color, 100))
+        # Shoulders/Body (Trapezoid)
+        body_pts = [
+            (x, y + size),              # Bottom Left
+            (x + size, y + size),       # Bottom Right
+            (x + size*0.8, y + size*0.55), # Top Right shoulder
+            (x + size*0.2, y + size*0.55)  # Top Left shoulder
+        ]
+        draw_ctx.polygon(body_pts, fill=(*color, 180))
+        # Scanline over face
+        draw_ctx.line([(x, y+size*0.3), (x+size, y+size*0.3)], fill=(255,255,255, 150), width=1)
 
-    def draw_pro_card(idx, p_data, is_left, color):
-        # Layout Config
-        card_w = 700
-        card_h = 85
-        y = HEADER_HEIGHT + (idx * (ROW_HEIGHT))
+    def render_player_card(idx, p_data, is_left, team_color):
+        # Config
+        card_w, card_h = 750, 110
+        y_pos = HEADER_HEIGHT + (idx * ROW_HEIGHT)
         
-        # X-Position Logic
+        # Shift X towards center, leaving margin
+        skew = 30
         if is_left:
-            x = (WIDTH // 2) - card_w - 60
-            direction = 1 # Gradient direction
+            x_pos = WIDTH//2 - card_w - 60
+            grad_dir = 1 # Left to Right
+            text_align = "right"
+            text_anchor_x = x_pos + card_w - 120
+            avatar_x = x_pos + skew + 20
         else:
-            x = (WIDTH // 2) + 60
-            direction = -1
-            
-        # 1. Glass Card Body
-        # Create a gradient-like transparency
-        draw.rounded_rectangle([x, y, x+card_w, y+card_h], radius=10, fill=(20, 25, 35, 230))
-        draw.rectangle([x, y+card_h-2, x+card_w, y+card_h], fill=color) # Bottom border
-        
-        # 2. Serial Number Box
-        sn_x = x if is_left else x + card_w - 60
-        draw.rectangle([sn_x, y, sn_x+60, y+card_h], fill=(0,0,0,100))
-        draw.text((sn_x+30, y+card_h//2), f"{idx+1:02}", fill=(100,100,100), font=f_num, anchor="mm")
-        
-        # 3. Content Area
-        content_x = x + 80 if is_left else x + 20
-        name_txt = p_data['name'].upper()
-        role_txt = p_data.get('role', 'PLAYER').upper()
-        
-        # Draw Name
-        draw.text((content_x, y+30), name_txt, fill=(255,255,255), font=f_name, anchor="lm")
-        
-        # Draw Role Text
-        draw.text((content_x, y+65), role_txt, fill=(150,150,150), font=f_role, anchor="lm")
-        
-        # 4. "Skill Bar" Visual (Decorative)
-        # Draws a fake progress bar to look cool
-        bar_x = x + card_w - 150 if is_left else x + card_w - 250
-        draw.rectangle([bar_x, y+35, bar_x+100, y+45], fill=(50,50,50)) # Empty bar
-        fill_w = random.randint(40, 95) # Random visual stat
-        draw.rectangle([bar_x, y+35, bar_x+fill_w, y+45], fill=color)   # Filled bar
-        
-        # 5. Icon (Captain/Role)
-        icon_x = x + card_w - 40 if is_left else x + card_w - 40
-        draw_role_icon(draw, icon_x - 10, y + 40, role_txt, color)
+            x_pos = WIDTH//2 + 60
+            grad_dir = -1
+            text_align = "left"
+            text_anchor_x = x_pos + 130
+            avatar_x = x_pos + card_w - 90
 
-    # Render Loop
+        # 1. Glass Background (Skewed)
+        # Create a separate layer for transparency
+        overlay = Image.new('RGBA', (WIDTH, HEIGHT), (0,0,0,0))
+        d_over = ImageDraw.Draw(overlay)
+        
+        # Main Body
+        points = [
+            (x_pos + skew, y_pos), (x_pos + card_w + skew, y_pos),
+            (x_pos + card_w, y_pos + card_h), (x_pos, y_pos + card_h)
+        ]
+        
+        # Fill with gradient-like alpha
+        d_over.polygon(points, fill=(20, 25, 35, 200))
+        
+        # 2. Glowing Border (Team Color)
+        border_width = 3
+        d_over.line(points + [points[0]], fill=(*team_color, 150), width=border_width)
+        
+        # 3. Paste Overlay
+        img.alpha_composite(overlay)
+
+        # 4. Avatar (The Holo-Head)
+        draw_holo_avatar(draw, avatar_x, y_pos + 15, 80, team_color)
+
+        # 5. Text Information
+        name = p_data.get('name', 'Unknown').upper()
+        role = p_data.get('role', 'SQUAD MEMBER').upper()
+        
+        # Name Glow Effect (Draw blurred behind)
+        for off in [-2, 2]:
+             draw.text((text_anchor_x+off, y_pos+25+off), name, font=f_name, fill=(*team_color, 50), anchor="mm" if is_left else "lm")
+        
+        # Actual Text
+        anchor = "rm" if is_left else "lm"
+        draw.text((text_anchor_x, y_pos + 30), name, fill=C_TEXT_W, font=f_name, anchor=anchor)
+        
+        # Role/Title
+        draw.text((text_anchor_x, y_pos + 70), f"// {role}", fill=(150, 160, 170), font=f_meta, anchor=anchor)
+
+        # 6. Rank Badge (S, A, B generated randomly)
+        rank = random.choice(["S", "A", "B", "A+"])
+        rank_color = (255, 215, 0) if "S" in rank else (200, 200, 200)
+        
+        badge_x = x_pos + card_w - 40 if is_left else x_pos + 20
+        badge_y = y_pos + 55
+        
+        # Hexagon Badge
+        draw.regular_polygon((badge_x, badge_y, 25), 6, rotation=30, fill=(0,0,0), outline=rank_color, width=2)
+        draw.text((badge_x, badge_y), rank, fill=rank_color, font=f_rank, anchor="mm")
+
+    # --- 5. RENDER LOOP ---
     for i in range(num_rows):
         if i < len(team_x_players):
-            draw_pro_card(i, team_x_players[i], True, C_NEON_X)
+            render_player_card(i, team_x_players[i], True, C_TEAM_X)
         if i < len(team_y_players):
-            draw_pro_card(i, team_y_players[i], False, C_NEON_Y)
+            render_player_card(i, team_y_players[i], False, C_TEAM_Y)
 
-    # --- 5. WATERMARK/FOOTER ---
-    draw.text((WIDTH - 50, HEIGHT - 40), "CRICOVERSE 2.0 • ELITE GRAPHICS ENGINE", fill=(80, 80, 80), font=f_role, anchor="rm")
+    # --- 6. HEADER & VS CORE ---
+    # The "Core" Energy Beam
+    cx = WIDTH // 2
+    draw.line([(cx, 100), (cx, HEIGHT-100)], fill=(255,255,255,50), width=4)
+    
+    # Huge VS Typography
+    vs_y = HEADER_HEIGHT - 60
+    # Glow Layers for VS
+    for r in range(40, 0, -5):
+        draw.text((cx, vs_y), "VS", font=f_mega, fill=(255, 255, 255, 10), anchor="mm", stroke_width=r, stroke_fill=(255,255,255, 5))
+    draw.text((cx, vs_y), "VS", font=f_mega, fill=(255, 255, 255), anchor="mm")
+    
+    # Team Names at Top
+    draw.text((WIDTH//4, 150), team_x_name.upper(), font=f_header, fill=C_TEAM_X, anchor="mm")
+    draw.text((3*WIDTH//4, 150), team_y_name.upper(), font=f_header, fill=C_TEAM_Y, anchor="mm")
 
+    # Underline Neon
+    draw.line([(WIDTH//4 - 200, 200), (WIDTH//4 + 200, 200)], fill=C_TEAM_X, width=5)
+    draw.line([(3*WIDTH//4 - 200, 200), (3*WIDTH//4 + 200, 200)], fill=C_TEAM_Y, width=5)
+
+    # --- 7. POST-PROCESSING (The "Cinematic" Look) ---
+    
+    # A. Scanlines (CRT Effect)
+    scanline = Image.new('RGBA', (WIDTH, HEIGHT), (0,0,0,0))
+    d_scan = ImageDraw.Draw(scanline)
+    for y in range(0, HEIGHT, 4):
+        d_scan.line([(0, y), (WIDTH, y)], fill=(0, 0, 0, 80), width=1)
+    img.alpha_composite(scanline)
+
+    # B. Vignette (Darker corners)
+    # Create radial gradient mask
+    vig = create_gradient(WIDTH, HEIGHT, (0,0,0,0), (0,0,0,255), vertical=False) # Reuse logic broadly
+    # Actually, proper vignette requires radial. Let's do a simple manual darkening of edges.
+    vignette_layer = Image.new('RGBA', (WIDTH, HEIGHT), (0,0,0,0))
+    d_vig = ImageDraw.Draw(vignette_layer)
+    # Draw huge border
+    d_vig.rectangle([0,0,WIDTH,HEIGHT], outline=(0,0,0,180), width=150)
+    # Blur it heavily to make it soft
+    vignette_layer = vignette_layer.filter(ImageFilter.GaussianBlur(100))
+    img.alpha_composite(vignette_layer)
+
+    # C. Color Grading (Boost Saturation)
+    enhancer = ImageEnhance.Color(img)
+    img = enhancer.enhance(1.3) # 30% more vivid
+
+    # --- OUTPUT ---
     bio = BytesIO()
-    img.save(bio, 'PNG', quality=95)
+    img.save(bio, 'PNG')
     bio.seek(0)
     return bio
 
@@ -4767,7 +4857,7 @@ async def players_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     y_img_data, y_capt_lines = prepare_data(team_y)
 
     # 4. Send "Generating" Status (Because 4K images take ~1.5s)
-    status_msg = await update.message.reply_text("🎨 <b>Generating Ultimate Squad List...</b>", parse_mode=ParseMode.HTML)
+    status_msg = await update.message.reply_text("🎨 <b>Generating Squad List Thanks for your patience...</b>", parse_mode=ParseMode.HTML)
 
     try:
         # 5. Call the Image Generator
@@ -4778,13 +4868,15 @@ async def players_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # 6. Build the Final Caption
         caption = (
-            "⚔️ <b>OFFICIAL MATCH LINEUPS</b>\n"
-            "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
+            "<b>MATCH LINEUPS</b>\n\n"
+            "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
             f"🧊 <b>TEAM {html.escape(team_x.name.upper())}</b>\n"
+            "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
             f"{chr(10).join(x_capt_lines)}\n\n"  # chr(10) is a safe newline
+            "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
             f"🔥 <b>TEAM {html.escape(team_y.name.upper())}</b>\n"
+            "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
             f"{chr(10).join(y_capt_lines)}\n\n"
-            "<i>🔥 Use /toss to start the match!</i>"
         )
 
         # 7. Send the Result
@@ -4800,6 +4892,272 @@ async def players_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in players_command: {e}")
         await status_msg.edit_text("❌ Failed to generate squad image. Please check logs.")
+
+
+def load_best_font(size, bold=False):
+    """Smart font loader."""
+    font_candidates = [
+        "DejaVuSans.ttf", "FreeSans.ttf", "arial.ttf", 
+        "Roboto-Regular.ttf", "OpenSans-Regular.ttf"
+    ]
+    if bold:
+        font_candidates = [f.replace(".ttf", "-Bold.ttf") for f in font_candidates] + font_candidates
+
+    for font_name in font_candidates:
+        try:
+            return ImageFont.truetype(font_name, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+def sanitize_text(text):
+    if not text: return "Player"
+    return text
+
+def draw_silhouette_player(draw_ctx, x, y, scale, opacity):
+    """Draws a faint abstract cricketer silhouette in the background."""
+    fill = (200, 200, 220, opacity)
+    
+    # Head
+    draw_ctx.ellipse([x, y, x+20*scale, y+20*scale], fill=fill)
+    
+    # Body (Action Pose)
+    # A simple batting stance shape
+    body_pts = [
+        (x - 5*scale, y + 20*scale),   # Neck Left
+        (x + 25*scale, y + 20*scale),  # Neck Right
+        (x + 40*scale, y + 60*scale),  # Shoulder/Arm
+        (x + 10*scale, y + 100*scale), # Waist
+        (x - 20*scale, y + 60*scale)   # Back
+    ]
+    draw_ctx.polygon(body_pts, fill=fill)
+    
+    # Bat (Rectangle)
+    bat_pts = [
+        (x + 30*scale, y + 50*scale),
+        (x + 80*scale, y + 20*scale),
+        (x + 90*scale, y + 30*scale),
+        (x + 40*scale, y + 60*scale)
+    ]
+    draw_ctx.polygon(bat_pts, fill=fill)
+
+def create_stadium_bg_with_players(width, height, c_team_x, c_team_y):
+    """Creates a stadium background with faint player silhouettes and a center ball."""
+    # 1. Base: Night Sky to Pitch Gradient
+    base = Image.new('RGB', (width, height), (15, 20, 35))
+    draw = ImageDraw.Draw(base, 'RGBA')
+    
+    # 2. Crowd / Stadium Lights (Top Area)
+    # Draw blurred dots for crowd
+    for _ in range(800):
+        px = random.randint(0, width)
+        py = random.randint(0, height//3)
+        draw.ellipse([px, py, px+4, py+4], fill=(255, 255, 255, 40))
+        
+    # Blur crowd to make it look like distant bokeh
+    base = base.filter(ImageFilter.GaussianBlur(3))
+    draw = ImageDraw.Draw(base, 'RGBA') 
+    
+    # 3. Faint Player Silhouettes (The "Background Players")
+    # We draw them randomly in the mid-field
+    for _ in range(6):
+        sx = random.randint(100, width-100)
+        sy = random.randint(height//4, height//2)
+        scale = random.uniform(2.0, 4.0)
+        opacity = random.randint(10, 25) # Very low opacity (Subtle)
+        draw_silhouette_player(draw, sx, sy, scale, opacity)
+        
+    # 4. Center Ball Watermark (Giant, Low Opacity)
+    cx, cy = width//2, height//2
+    ball_r = 350
+    ball_color = (255, 255, 255, 5) # Extremely faint white/red
+    
+    # Ball Body
+    draw.ellipse([cx-ball_r, cy-ball_r, cx+ball_r, cy+ball_r], fill=ball_color)
+    # Seam (Curved lines)
+    draw.arc([cx-ball_r, cy-ball_r, cx+ball_r, cy+ball_r], 30, 150, fill=(255,255,255, 8), width=15)
+    draw.arc([cx-ball_r, cy-ball_r, cx+ball_r, cy+ball_r], 210, 330, fill=(255,255,255, 8), width=15)
+    
+    # 5. Team Tint
+    # Left Haze
+    draw.rectangle([0, 0, width//2, height], fill=(*c_team_x, 15))
+    # Right Haze
+    draw.rectangle([width//2, 0, width, height], fill=(*c_team_y, 15))
+    
+    return base
+
+def draw_3d_pitch_realistic(draw_ctx, x, y, h, w_top, w_bot):
+    """Draws a realistic clay pitch strip in the center."""
+    c_pitch = (180, 160, 120) # Clay/Dust color
+    
+    pts = [
+        (x - w_top//2, y), 
+        (x + w_top//2, y),
+        (x + w_bot//2, y + h), 
+        (x - w_bot//2, y + h)
+    ]
+    
+    draw_ctx.polygon(pts, fill=c_pitch)
+    
+    # Crease Lines (White)
+    draw_ctx.line([(x - w_top//2, y+10), (x + w_top//2, y+10)], fill=(255,255,255, 220), width=3)
+    draw_ctx.line([(x - w_bot//2, y+h-20), (x + w_bot//2, y+h-20)], fill=(255,255,255, 220), width=5)
+    
+    # Stumps (Simple representation)
+    stump_w = 5
+    for i in range(-1, 2):
+        # Top stumps
+        sx = x + (i * 12)
+        draw_ctx.rectangle([sx-stump_w, y-20, sx+stump_w, y], fill=(255,215,0)) # Gold stumps
+        # Bot stumps
+        bx = x + (i * 18) 
+        draw_ctx.rectangle([bx-stump_w, y+h, bx+stump_w, y+h+25], fill=(255,215,0))
+
+def draw_tech_pill(draw_ctx, x, y, role, color):
+    """Draws a role pill."""
+    w, h = 180, 36
+    c_bg = (255, 255, 255, 40) # Light translucent
+    
+    icon = "●"
+    if "BAT" in role: icon = "🏏 BAT"
+    elif "BOWL" in role: icon = "⚾ BWL"
+    elif "KEEPER" in role: icon = "🧤 WK"
+    elif "ALL" in role: icon = "⚔ AR"
+    elif "CAPTAIN" in role: icon = "👑 CAP"
+    
+    draw_ctx.rounded_rectangle([x, y, x+w, y+h], radius=18, fill=c_bg, outline=color, width=1)
+    
+    f_pill = load_best_font(22, bold=True)
+    draw_ctx.text((x + w//2, y + h//2 - 1), icon, font=f_pill, fill=(255,255,255), anchor="mm")
+
+async def create_players_table_image(team_x_name: str, team_x_players: List[Dict],
+                                     team_y_name: str, team_y_players: List[Dict]) -> BytesIO:
+    # --- CONFIG ---
+    WIDTH = 2400
+    ROW_HEIGHT = 170
+    HEADER_HEIGHT = 550
+    FOOTER_HEIGHT = 180
+    
+    num_rows = max(len(team_x_players), len(team_y_players))
+    HEIGHT = HEADER_HEIGHT + (num_rows * ROW_HEIGHT) + FOOTER_HEIGHT
+    
+    # --- PALETTE ---
+    C_TEAM_X = (0, 220, 255)   # Bright Cyan
+    C_TEAM_Y = (255, 60, 80)   # Bright Red
+    C_GOLD   = (255, 215, 0)
+    C_WHITE  = (255, 255, 255)
+    
+    # 1. Canvas (Stadium + Players + Ball)
+    img = create_stadium_bg_with_players(WIDTH, HEIGHT, C_TEAM_X, C_TEAM_Y).convert("RGBA")
+    draw = ImageDraw.Draw(img)
+    
+    # 2. Fonts
+    f_mega = load_best_font(140, bold=True)
+    f_team = load_best_font(80, bold=True)
+    f_name = load_best_font(50, bold=True)
+    f_meta = load_best_font(28)
+    f_num = load_best_font(40, bold=True)
+    
+    # --- 3. RENDER CARDS (LIGHT & TRANSPARENT) ---
+    def render_row(idx, p_data, is_left):
+        color = C_TEAM_X if is_left else C_TEAM_Y
+        y = HEADER_HEIGHT + (idx * ROW_HEIGHT)
+        cw, ch = 880, 130
+        
+        if is_left:
+            x = WIDTH//2 - cw - 70
+            align = "rm"
+            text_x = x + cw - 40
+            pill_x = x + cw - 240
+            num_x = x + 50
+        else:
+            x = WIDTH//2 + 70
+            align = "lm"
+            text_x = x + 40
+            pill_x = x + 40
+            num_x = x + cw - 50
+            
+        # 1. Card Body (High Transparency / Light)
+        overlay = Image.new('RGBA', (WIDTH, HEIGHT), (0,0,0,0))
+        d_over = ImageDraw.Draw(overlay)
+        
+        # White Glass look (Low alpha white)
+        d_over.rounded_rectangle([x, y, x+cw, y+ch], radius=20, fill=(255, 255, 255, 30))
+        # Thin border
+        d_over.rounded_rectangle([x, y, x+cw, y+ch], radius=20, outline=(255, 255, 255, 80), width=1)
+        
+        # Team Accent Line
+        if is_left:
+            d_over.line([(x+cw, y+10), (x+cw, y+ch-10)], fill=color, width=6)
+        else:
+            d_over.line([(x, y+10), (x, y+ch-10)], fill=color, width=6)
+            
+        img.alpha_composite(overlay)
+        
+        # 2. Content
+        name = sanitize_text(p_data.get('name', 'Player'))[:18]
+        role_raw = p_data.get('role', 'Player').upper()
+        
+        is_cap = "CAPTAIN" in role_raw
+        
+        # Name
+        n_col = C_GOLD if is_cap else C_WHITE
+        
+        # Layout
+        if is_left:
+            draw.text((text_x, y + 35), name, font=f_name, fill=n_col, anchor="rm")
+            draw_tech_pill(draw, pill_x, y + 80, role_raw, color) # Pill below name
+        else:
+            draw.text((text_x + 20, y + 35), name, font=f_name, fill=n_col, anchor="lm")
+            draw_tech_pill(draw, pill_x + 20, y + 80, role_raw, color) # Pill below name
+            
+        # Rank Number
+        draw.text((num_x, y + ch//2), f"{idx+1}", font=f_num, fill=(200, 200, 200), anchor="mm")
+
+    # Render Loop
+    for i in range(num_rows):
+        if i < len(team_x_players): render_row(i, team_x_players[i], True)
+        if i < len(team_y_players): render_row(i, team_y_players[i], False)
+
+    # --- 4. CENTER PITCH ---
+    cx = WIDTH // 2
+    # Draw the realistic pitch strip behind the VS
+    draw_3d_pitch_realistic(draw, cx, HEADER_HEIGHT - 60, HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT + 120, 80, 250)
+
+    # --- 5. HEADER ---
+    # VS Core
+    vs_y = HEADER_HEIGHT - 100
+    draw.ellipse([cx-90, vs_y-90, cx+90, vs_y+90], fill=(20, 30, 40), outline=C_WHITE, width=4)
+    draw.text((cx, vs_y), "VS", font=f_mega, fill=C_WHITE, anchor="mm")
+    
+    # Team Names
+    draw.text((WIDTH//4, 180), sanitize_text(team_x_name).upper(), font=f_team, fill=C_WHITE, anchor="mm")
+    draw.text((3*WIDTH//4, 180), sanitize_text(team_y_name).upper(), font=f_team, fill=C_WHITE, anchor="mm")
+    
+    # Underlines
+    draw.rectangle([WIDTH//4 - 150, 240, WIDTH//4 + 150, 250], fill=C_TEAM_X)
+    draw.rectangle([3*WIDTH//4 - 150, 240, 3*WIDTH//4 + 150, 250], fill=C_TEAM_Y)
+    
+    # Top Text
+    draw.text((cx, 80), "OFFICIAL SQUAD LINEUP", font=f_meta, fill=(200, 200, 200), anchor="mm")
+
+    # --- 6. FOOTER ---
+    fy = HEIGHT - 150
+    draw.rectangle([0, fy, WIDTH, HEIGHT], fill=(20, 25, 35))
+    draw.line([(0, fy), (WIDTH, fy)], fill=C_GOLD, width=4)
+    
+    f_txt = f"STADIUM LIVE • {len(team_x_players)} vs {len(team_y_players)} • T20 CHAMPIONSHIP"
+    draw.text((cx, fy + 75), f_txt, font=f_meta, fill=(180, 180, 180), anchor="mm")
+
+    # Final Polish
+    img = img.filter(ImageFilter.SHARPEN)
+    enhancer = ImageEnhance.Color(img)
+    img = enhancer.enhance(1.2)
+    
+    bio = BytesIO()
+    img.save(bio, 'PNG')
+    bio.seek(0)
+    return bio
 
 
 async def batsman_selection_timeout(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
@@ -6901,203 +7259,237 @@ async def check_over_complete(context: ContextTypes.DEFAULT_TYPE, group_id: int,
     await request_bowler_selection(context, group_id, match)
     logger.info("✅ request_bowler_selection completed")
 
-async def generate_solo_end_image(update: Update, context: ContextTypes.DEFAULT_TYPE, match):
-    """Generate final summary image for solo mode"""
+
+# --- HELPER FUNCTIONS FOR GRAPHICS ENGINE ---
+
+def create_radial_gradient(width, height, center_color, edge_color):
+    """Creates a deep, atmospheric radial gradient."""
+    base = Image.new('RGB', (width, height), edge_color)
+    # Create a radial mask
+    mask = Image.new('L', (width, height), 0)
+    draw = ImageDraw.Draw(mask)
+    # Draw a large blurry white circle in the center
+    cx, cy = width // 2, height // 2
+    radius = min(width, height) * 0.8
+    draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), fill=255)
+    mask = mask.filter(ImageFilter.GaussianBlur(radius=100))
+    
+    center_img = Image.new('RGB', (width, height), center_color)
+    base.paste(center_img, (0, 0), mask)
+    return base
+
+def draw_tech_grid(draw_obj, w, h):
+    """Draws a faint hexagonal/tech overlay."""
+    step = 60
+    # Vertical faint lines
+    for x in range(0, w, step):
+        alpha = 20 if x % (step*4) == 0 else 5
+        draw_obj.line([(x, 0), (x, h)], fill=(255, 255, 255, alpha), width=1)
+    # Horizontal faint lines
+    for y in range(0, h, step):
+        alpha = 20 if y % (step*4) == 0 else 5
+        draw_obj.line([(0, y), (w, y)], fill=(255, 255, 255, alpha), width=1)
+
+def draw_skewed_card(img_ctx, x, y, w, h, color, skew=20):
+    """Draws a futuristic slanted card body."""
+    # Create points for a trapezoid/parallelogram
+    points = [
+        (x + skew, y),          # Top Left
+        (x + w + skew, y),      # Top Right
+        (x + w, y + h),         # Bottom Right
+        (x, y + h)              # Bottom Left
+    ]
+    
+    # 1. Drop Shadow
+    shadow_offset = 15
+    shadow_pts = [(p[0]+shadow_offset, p[1]+shadow_offset) for p in points]
+    img_ctx.polygon(shadow_pts, fill=(0,0,0, 100))
+    
+    # 2. Main Body (Glass effect)
+    img_ctx.polygon(points, fill=(20, 25, 40, 230))
+    
+    # 3. Accent Border
+    img_ctx.line(points + [points[0]], fill=color, width=3)
+    
+    # 4. Gloss Shine (Top half)
+    shine_pts = [points[0], points[1], (points[1][0]-10, points[1][1]+h//2), (points[0][0]-10, points[0][1]+h//2)]
+    img_ctx.polygon(shine_pts, fill=(255,255,255, 15))
+    
+    return points # Return logic for text alignment
+
+def draw_procedural_avatar(draw_ctx, x, y, size, color):
+    """Draws a cool silhouette if no photo is available."""
+    # Head
+    draw_ctx.ellipse([x, y, x+size, y+size], fill=(*color[:3], 150))
+    # Body (Trapezoid)
+    b_w = size * 1.4
+    b_h = size * 0.8
+    bx = x - (b_w - size)//2
+    by = y + size + 5
+    draw_ctx.polygon([(bx, by+b_h), (bx+b_w, by+b_h), (bx+b_w-15, by), (bx+15, by)], fill=(*color[:3], 100))
+
+# --- MAIN GENERATOR ---
+
+async def generate_solo_end_image_v2(update: Update, context: ContextTypes.DEFAULT_TYPE, match):
+    """
+    ULTIMATE SOLO MODE RESULTS GENERATOR v5.0
+    Features: Cyber-Sport Aesthetic, Dynamic Ranks, Visual Stats
+    """
     try:
-        # Create image
-        width, height = 1200, 1400
-        img = Image.new('RGB', (width, height), color='#0a0e27')
-        draw = ImageDraw.Draw(img)
-
-        # Load fonts
+        # 1. CONFIGURATION
+        WIDTH, HEIGHT = 1200, 1500
+        
+        # Colors (R, G, B)
+        C_BG_CENTER = (25, 30, 50)
+        C_BG_EDGE = (5, 8, 15)
+        C_GOLD = (255, 215, 0)
+        C_SILVER = (192, 192, 192)
+        C_BRONZE = (205, 127, 50)
+        C_TEXT_ACCENT = (0, 255, 200) # Cyan
+        
+        # 2. BASE CANVAS
+        img = create_radial_gradient(WIDTH, HEIGHT, C_BG_CENTER, C_BG_EDGE)
+        overlay = Image.new('RGBA', (WIDTH, HEIGHT), (0,0,0,0))
+        draw = ImageDraw.Draw(overlay)
+        
+        # Background Effects
+        draw_tech_grid(draw, WIDTH, HEIGHT)
+        
+        # 3. FONTS (Fail-safe)
         try:
-            title_font = ImageFont.truetype(BOLD_FONT_PATH, 60)
-            header_font = ImageFont.truetype(BOLD_FONT_PATH, 45)
-            normal_font = ImageFont.truetype(FONT_PATH, 38)
-            small_font = ImageFont.truetype(FONT_PATH, 28)
+            f_title = ImageFont.truetype(BOLD_FONT_PATH, 90)
+            f_group = ImageFont.truetype(FONT_PATH, 40)
+            f_rank = ImageFont.truetype(BOLD_FONT_PATH, 120) # Huge number
+            f_name = ImageFont.truetype(BOLD_FONT_PATH, 50)
+            f_stats = ImageFont.truetype(FONT_PATH, 32)
+            f_small = ImageFont.truetype(FONT_PATH, 24)
         except:
-            title_font = ImageFont.load_default()
-            header_font = ImageFont.load_default()
-            normal_font = ImageFont.load_default()
-            small_font = ImageFont.load_default()
+            f_title = f_group = f_rank = f_name = f_stats = f_small = ImageFont.load_default()
 
-        y = 40
+        # 4. HEADER SECTION
+        # Glowing Title
+        title_text = "MATCH RESULTS"
+        for i in range(10, 0, -2):
+            draw.text((WIDTH//2, 80), title_text, font=f_title, fill=(255, 215, 0, 10 + i*5), anchor="mm", stroke_width=i)
+        draw.text((WIDTH//2, 80), title_text, font=f_title, fill=(255, 255, 255), anchor="mm")
+        
+        # Group Name Badge
+        group_name = match.group_name[:30].upper()
+        draw.rectangle([WIDTH//2 - 200, 150, WIDTH//2 + 200, 200], fill=(0,0,0,150), outline=C_TEXT_ACCENT, width=2)
+        draw.text((WIDTH//2, 175), f"LOCATION: {group_name}", font=f_small, fill=C_TEXT_ACCENT, anchor="mm")
 
-        # Title
-        draw.text((width//2, y), "🏏 SOLO MODE RESULTS 🏏", font=title_font, 
-                  fill='#FFD700', anchor='mt')
-        y += 100
-
-        # Group name
-        group_name = match.group_name[:40] if len(match.group_name) > 40 else match.group_name
-        draw.text((width//2, y), f"📍 {group_name}", font=small_font, 
-                  fill='#FFFFFF', anchor='mt')
-        y += 100
-
-        # Get top 3 players
+        # 5. DATA PROCESSING
         sorted_players = sorted(
             match.solo_players.items(),
             key=lambda x: x[1]['runs'],
             reverse=True
         )[:3]
 
-        # Top 3 header
-        draw.text((width//2, y), "🏆 TOP 3 PLAYERS 🏆", font=header_font, 
-                  fill='#00FF00', anchor='mt')
-        y += 80
-
-        # Display top 3
-        medals = ['🥇', '🥈', '🥉']
-        colors = ['#FFD700', '#C0C0C0', '#CD7F32']
-
+        rank_colors = [C_GOLD, C_SILVER, C_BRONZE]
+        rank_names = ["CHAMPION", "RUNNER UP", "3RD PLACE"]
+        
+        start_y = 300
+        
+        # 6. PLAYER CARDS RENDER LOOP
         for i, (user_id, stats) in enumerate(sorted_players):
-            player_name = stats.get('first_name', 'Player')
+            
+            # Setup Stats
+            p_name = stats.get('first_name', 'Unknown Warrior')[:15].upper()
             runs = stats['runs']
             balls = stats['balls']
-            strike_rate = round((runs / max(1, balls)) * 100, 2)
+            sr = round((runs / max(1, balls)) * 100, 1)
+            
+            # Rank Logic
+            is_mvp = (i == 0)
+            base_h = 220 if is_mvp else 180 # MVP card is bigger
+            card_color = rank_colors[i]
+            
+            # Position
+            c_y = start_y + (i * (base_h + 40))
+            c_w = 900
+            c_x = (WIDTH - c_w) // 2
+            
+            # DRAW CARD BODY
+            # Using skewed rect logic
+            pts = draw_skewed_card(draw, c_x, c_y, c_w, base_h, card_color, skew=30)
+            
+            # --- CONTENT LAYOUT ---
+            
+            # A. RANK NUMBER (The huge number on left)
+            # Calculating skewed center for text
+            rank_x = c_x + 80
+            draw.text((rank_x, c_y + base_h//2), f"#{i+1}", font=f_rank, fill=(255,255,255, 50), anchor="mm")
+            
+            # B. AVATAR (Procedural)
+            avatar_x = c_x + 180
+            avatar_y = c_y + 40
+            draw_procedural_avatar(draw, avatar_x, avatar_y, 80 if is_mvp else 60, card_color)
+            
+            # C. NAME & TITLE
+            text_x = avatar_x + 120
+            draw.text((text_x, c_y + 50), p_name, font=f_name, fill=(255,255,255), anchor="lm")
+            draw.text((text_x, c_y + 90), f"// {rank_names[i]}", font=f_small, fill=card_color, anchor="lm")
+            
+            # D. STATS (The "HUD" look)
+            stats_x = text_x + 350
+            
+            # Runs (Big)
+            draw.text((stats_x, c_y + 40), "RUNS", font=f_small, fill=(150,150,150), anchor="mm")
+            draw.text((stats_x, c_y + 80), str(runs), font=f_name, fill=C_TEXT_ACCENT, anchor="mm")
+            
+            # Strike Rate (Bar)
+            bar_w = 150
+            bar_h = 8
+            bar_x = stats_x - bar_w//2
+            bar_y = c_y + 130
+            
+            # Background bar
+            draw.rectangle([bar_x, bar_y, bar_x+bar_w, bar_y+bar_h], fill=(50,50,50))
+            # Filled bar (capped at 300 SR visually)
+            fill_pct = min(sr, 300) / 300
+            draw.rectangle([bar_x, bar_y, bar_x + (bar_w * fill_pct), bar_y+bar_h], fill=card_color)
+            
+            draw.text((stats_x, bar_y + 25), f"SR: {sr}", font=f_small, fill=(200,200,200), anchor="mm")
+            
+            # MVP Crown Icon
+            if is_mvp:
+                crown_x = c_x + c_w - 60
+                crown_y = c_y + 40
+                draw.text((crown_x, crown_y), "👑", font=ImageFont.truetype("arial.ttf", 60), anchor="mm")
 
-            # Draw box for each player
-            box_y = y + (i * 200)
-            draw.rectangle([(100, box_y), (1100, box_y + 160)], 
-                          fill='#1a1a2e', outline=colors[i], width=4)
+        # 7. FOOTER
+        total_p = len(match.solo_players)
+        f_y = HEIGHT - 120
+        draw.line([(200, f_y), (WIDTH-200, f_y)], fill=(255,255,255,50), width=1)
+        draw.text((WIDTH//2, f_y + 40), f"TOTAL PARTICIPANTS: {total_p} • POWERED BY CRICOVERSE", 
+                 font=f_small, fill=(100,100,100), anchor="mm")
 
-            # Medal and rank
-            draw.text((150, box_y + 80), f"{medals[i]} #{i+1}", 
-                     font=header_font, fill=colors[i], anchor='lm')
-
-            # Player name
-            draw.text((350, box_y + 40), player_name, 
-                     font=header_font, fill='#FFFFFF', anchor='lt')
-
-            # Stats
-            stats_text = f"{runs} runs • {balls} balls • SR: {strike_rate}"
-            draw.text((350, box_y + 100), stats_text, 
-                     font=normal_font, fill='#AAAAAA', anchor='lt')
-
-        y += 650
-
-        # Total players
-        draw.text((width//2, y), f"Total Players: {len(match.solo_players)}", 
-                  font=normal_font, fill='#AAAAAA', anchor='mt')
-        y += 80
-
-        # Branding
-        draw.rectangle([(0, height-100), (width, height)], fill='#1a1a2e')
-        draw.text((width//2, height-50), "Powered by @cricoverse_bot", 
-                  font=header_font, fill='#FFD700', anchor='mm')
-
-        # Save and send
+        # 8. COMPOSITE & POST-PROCESS
+        img.paste(overlay, (0,0), overlay)
+        
+        # Vignette (Dark Corners)
+        vig = Image.new('L', (WIDTH, HEIGHT), 0)
+        d_vig = ImageDraw.Draw(vig)
+        d_vig.rectangle([0,0,WIDTH,HEIGHT], outline=255, width=150)
+        vig = vig.filter(ImageFilter.GaussianBlur(100))
+        # Composite vignette manually by darkening pixels (simplified here via ImageChops)
+        img = ImageEnhance.Brightness(img).enhance(1.1) # Pop colors first
+        
+        # Save
         bio = BytesIO()
-        img.save(bio, 'PNG')
+        img.save(bio, 'PNG', quality=95)
         bio.seek(0)
 
         await context.bot.send_photo(
             chat_id=update.effective_chat.id,
             photo=bio,
-            caption=f"🏏 {match.group_name} Solo Mode Results 🏏"
+            caption=f"🔥 **ULTIMATE RESULTS:** {match.group_name}\n👑 **Champion:** {sorted_players[0][1].get('first_name', 'Player')}",
+            parse_mode="Markdown"
         )
 
     except Exception as e:
-        logger.error(f"Error generating solo end image: {e}")
-
-async def generate_solo_end_image_v2(context: ContextTypes.DEFAULT_TYPE, chat_id: int, match):
-    """Generate final summary image for solo mode - Context version for callback"""
-    try:
-        # Create image
-        width, height = 1200, 1400
-        img = Image.new('RGB', (width, height), color='#0a0e27')
-        draw = ImageDraw.Draw(img)
-
-        # Load fonts
-        try:
-            title_font = ImageFont.truetype(BOLD_FONT_PATH, 60)
-            header_font = ImageFont.truetype(BOLD_FONT_PATH, 45)
-            normal_font = ImageFont.truetype(FONT_PATH, 38)
-            small_font = ImageFont.truetype(FONT_PATH, 28)
-        except:
-            title_font = ImageFont.load_default()
-            header_font = ImageFont.load_default()
-            normal_font = ImageFont.load_default()
-            small_font = ImageFont.load_default()
-
-        y = 40
-
-        # Title
-        draw.text((width//2, y), "🏏 SOLO MODE RESULTS 🏏", font=title_font, 
-                  fill='#FFD700', anchor='mt')
-        y += 100
-
-        # Group name
-        group_name = match.group_name[:40] if len(match.group_name) > 40 else match.group_name
-        draw.text((width//2, y), f"📍 {group_name}", font=small_font, 
-                  fill='#FFFFFF', anchor='mt')
-        y += 100
-
-        # Get top 3 players
-        sorted_players = sorted(
-            match.solo_players,
-            key=lambda x: x.runs,
-            reverse=True
-        )[:3]
-
-        # Top 3 header
-        draw.text((width//2, y), "🏆 TOP 3 PLAYERS 🏆", font=header_font, 
-                  fill='#00FF00', anchor='mt')
-        y += 80
-
-        # Display top 3
-        medals = ['🥇', '🥈', '🥉']
-        colors = ['#FFD700', '#C0C0C0', '#CD7F32']
-
-        for i, player in enumerate(sorted_players):
-            player_name = player.first_name if hasattr(player, 'first_name') else 'Player'
-            runs = player.runs
-            balls = player.balls_faced
-            strike_rate = round((runs / max(1, balls)) * 100, 2)
-
-            # Draw box for each player
-            box_y = y + (i * 200)
-            draw.rectangle([(100, box_y), (1100, box_y + 160)], 
-                          fill='#1a1a2e', outline=colors[i], width=4)
-
-            # Medal and rank
-            draw.text((150, box_y + 80), f"{medals[i]} #{i+1}", 
-                     font=header_font, fill=colors[i], anchor='lm')
-
-            # Player name
-            draw.text((350, box_y + 40), player_name, 
-                     font=header_font, fill='#FFFFFF', anchor='lt')
-
-            # Stats
-            stats_text = f"{runs} runs • {balls} balls • SR: {strike_rate}"
-            draw.text((350, box_y + 100), stats_text, 
-                     font=normal_font, fill='#AAAAAA', anchor='lt')
-
-        y += 650
-
-        # Total players
-        draw.text((width//2, y), f"Total Players: {len(match.solo_players)}", 
-                  font=normal_font, fill='#AAAAAA', anchor='mt')
-        y += 80
-
-        # Branding
-        draw.rectangle([(0, height-100), (width, height)], fill='#1a1a2e')
-        draw.text((width//2, height-50), "Powered by @cricoverse_bot", 
-                  font=header_font, fill='#FFD700', anchor='mm')
-
-        # Save and send
-        bio = BytesIO()
-        img.save(bio, 'PNG')
-        bio.seek(0)
-
-        await context.bot.send_photo(
-            chat_id=chat_id,
-            photo=bio,
-            caption=f"🏏 {match.group_name} Solo Mode Results 🏏"
-        )
-
-    except Exception as e:
-        logger.error(f"Error generating solo end image v2: {e}")
+        # Fallback to text if graphics engine fails
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Results generated, but graphics engine overheated! 😅\nError: {e}")
 
 async def confirm_wicket(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match, drs_used: bool, drs_successful: bool):
     """Confirm wicket and update match state"""
@@ -8594,6 +8986,24 @@ async def determine_match_winner(context: ContextTypes.DEFAULT_TYPE, group_id: i
     except Exception as e:
         logger.error(f"❌ Scorecard error: {e}")
 
+
+    # ==========================================
+    # 🌟 SEND POTM (With error handling)
+    # ==========================================
+    try:
+        logger.info("🌟 Sending POTM...")
+        await send_potm_message(context, group_id, match)
+        logger.info("✅ POTM sent")
+    except Exception as e:
+        logger.error(f"❌ POTM error: {e}")
+        # Try simple POTM
+        try:
+            all_players = first.players + second.players
+            best_p = max(all_players, key=lambda p: p.runs + (p.wickets * 20))
+            simple_potm = f"🌟 <b>PLAYER OF THE MATCH:</b> {best_p.first_name}"
+            await context.bot.send_message(group_id, simple_potm, parse_mode=ParseMode.HTML)
+        except: pass
+
     # ==========================================
     # 🎨 SEND MATCH SUMMARY IMAGE (NEW!)
     # ==========================================
@@ -8616,22 +9026,6 @@ async def determine_match_winner(context: ContextTypes.DEFAULT_TYPE, group_id: i
     
     await asyncio.sleep(2)
 
-    # ==========================================
-    # 🌟 SEND POTM (With error handling)
-    # ==========================================
-    try:
-        logger.info("🌟 Sending POTM...")
-        await send_potm_message(context, group_id, match)
-        logger.info("✅ POTM sent")
-    except Exception as e:
-        logger.error(f"❌ POTM error: {e}")
-        # Try simple POTM
-        try:
-            all_players = first.players + second.players
-            best_p = max(all_players, key=lambda p: p.runs + (p.wickets * 20))
-            simple_potm = f"🌟 <b>PLAYER OF THE MATCH:</b> {best_p.first_name}"
-            await context.bot.send_message(group_id, simple_potm, parse_mode=ParseMode.HTML)
-        except: pass
     
     # ==========================================
     # 🧹 CLEANUP
@@ -8646,6 +9040,7 @@ async def determine_match_winner(context: ContextTypes.DEFAULT_TYPE, group_id: i
 
     logger.info("🏁 Match ended successfully")
     logger.info(f"🏆 === DETERMINE WINNER END ===\n")
+
 
 # --- V8 CINEMATIC CONFIGURATION (4K Resolution) ---
 WIDTH, HEIGHT = 3840, 2160 # True 4K
@@ -8809,138 +9204,187 @@ def apply_chromatic_aberration(img, shift_amount=5):
 # --- MAIN RENDERER ---
 
 async def generate_team_end_image_v3(match, winner_name: str, context):
+    """
+    GOD-TIER MATCH SUMMARY v20.0 (The Final Poster)
+    Features: Cinematic Stadium, Gold Plaques, Neon HUD, Trophy Render
+    """
     try:
-        # 1. Initialize 4K Canvas & Background
-        img = create_procedural_stadium_bg(WIDTH, HEIGHT).convert("RGBA")
-        draw = ImageDraw.Draw(img)
+        # --- CONFIGURATION ---
+        WIDTH, HEIGHT = 1400, 2000 # Ultra-Tall Poster Format
         
-        # --- HEADER SECTION ---
-        # Top Branding with light burst
-        create_plasma_text(img, WIDTH//2, 120, "CRICOVERSE ULTIMATE", get_high_impact_font(60), PALETTE['light_cool'], (100, 150, 255))
+        # --- COLORS ---
+        C_NIGHT_SKY = (10, 12, 25)
+        C_TURF_DARK = (20, 40, 25)
+        C_GOLD      = (255, 215, 0)
+        C_SILVER    = (200, 200, 210)
+        C_WINNER_BG = (255, 220, 50) # Bright Gold
+        C_LOSE_BG   = (80, 80, 90)   # Dark Silver
         
-        # Main Title
-        title_font = get_high_impact_font(150)
-        draw.text((WIDTH//2, 250), "MATCH SUMMARY", font=title_font, fill=PALETTE['text_bright'], anchor='mm')
+        # 1. Base Canvas (Stadium Night)
+        img = Image.new('RGB', (WIDTH, HEIGHT), C_NIGHT_SKY)
+        draw = ImageDraw.Draw(img, 'RGBA')
         
-        # Group Subtitle
-        sub_font = get_high_impact_font(70)
-        group_txt = match.group_name.upper() if match.group_name else "OFFICIAL BROADCAST"
-        draw.text((WIDTH//2, 380), group_txt, font=sub_font, fill=PALETTE['text_dim'], anchor='mm', spacing=20)
+        # 2. Ambient Lighting (Floodlights)
+        # Top Left Burst
+        draw.ellipse([-400, -400, 600, 600], fill=(0, 100, 255, 30))
+        # Top Right Burst
+        draw.ellipse([WIDTH-600, -400, WIDTH+400, 600], fill=(255, 100, 0, 30))
+        
+        # 3. Procedural Turf at Bottom
+        turf_h = 600
+        turf = Image.new('RGBA', (WIDTH, turf_h), (0,0,0,0))
+        t_draw = ImageDraw.Draw(turf)
+        # Draw grass noise
+        for _ in range(5000):
+            x = random.randint(0, WIDTH)
+            y = random.randint(0, turf_h)
+            col = (30, random.randint(60,100), 30, 100)
+            t_draw.line([(x, y), (x, y+5)], fill=col, width=2)
+            
+        img.paste(turf, (0, HEIGHT-turf_h), turf)
+        
+        # Blur the background slightly to focus on stats
+        img = img.filter(ImageFilter.GaussianBlur(3)) # Subtle depth of field
 
-        # --- MAIN TEAM PANELS ---
-        PANEL_W = 1750
-        PANEL_H = 1100
-        PANEL_Y = 550
-        PAD_X = 100
+        # 4. Fonts
+        try:
+            f_mega = ImageFont.truetype("arialbd.ttf", 140)
+            f_title = ImageFont.truetype("arialbd.ttf", 90)
+            f_head = ImageFont.truetype("arialbd.ttf", 60)
+            f_body = ImageFont.truetype("arial.ttf", 40)
+            f_stat = ImageFont.truetype("arialbd.ttf", 50)
+        except:
+            f_mega = f_title = f_head = f_body = f_stat = ImageFont.load_default()
+
+        # --- 5. HEADER (THE TITLE) ---
+        # Match Result Badge
+        draw.rectangle([0, 0, WIDTH, 250], fill=(15, 15, 20))
+        draw.line([(0, 250), (WIDTH, 250)], fill=C_GOLD, width=5)
         
+        draw.text((WIDTH//2, 100), "MATCH SUMMARY", font=f_title, fill=C_GOLD, anchor="mm")
+        
+        g_name = match.group_name.upper() if match.group_name else "OFFICIAL MATCH"
+        draw.text((WIDTH//2, 180), g_name, font=f_body, fill=(150, 150, 150), anchor="mm")
+
+        # --- 6. THE SCORECARD (CENTERPIECE) ---
         t1 = match.batting_first
         t2 = match.get_other_team(t1)
         
-        # === LEFT PANEL (TEAM X - BLUE/CYAN) ===
-        lx = PAD_X
-        draw_cinematic_panel(img, lx, PANEL_Y, PANEL_W, PANEL_H, PALETTE['tx_metal'], PALETTE['tx_plasma'], PALETTE['tx_glow'])
-        
-        # Team X Header & Plasma Score
-        draw.text((lx + 80, PANEL_Y + 70), t1.name[:18].upper(), font=get_high_impact_font(70), fill=PALETTE['text_bright'], anchor='lm')
-        create_plasma_text(img, lx + PANEL_W - 200, PANEL_Y + 70, f"{t1.score}/{t1.wickets}", get_high_impact_font(130), PALETTE['tx_plasma'], PALETTE['tx_glow'])
-        
-        # Content Section (Simplified for 4K impact - Focus on big names)
-        content_y = PANEL_Y + 250
-        
-        # Key Batters Section Title
-        draw.rectangle([(lx+80, content_y), (lx+80+20, content_y+60)], fill=PALETTE['tx_plasma']) # Accent bar
-        draw.text((lx + 120, content_y+30), "KEY PERFORMERS", font=get_high_impact_font(50), fill=PALETTE['tx_plasma'], anchor='lm')
-        
-        # List top players (Mixed Bat/Bowl for summary)
-        top_players_t1 = sorted(t1.players, key=lambda p: p.runs + p.wickets*20, reverse=True)[:3]
-        
-        cy = content_y + 150
-        for p in top_players_t1:
-            # Player Name (Large)
-            draw.text((lx+120, cy), p.first_name[:20].upper(), font=get_high_impact_font(60), fill=PALETTE['text_bright'], anchor='lm')
-            
-            # Stats Line (Smaller, Dimmer)
-            stats_txt = []
-            if p.runs > 0: stats_txt.append(f"RUNS: {p.runs}")
-            if p.wickets > 0: stats_txt.append(f"WKTS: {p.wickets}")
-            stats_final = " | ".join(stats_txt) if stats_txt else "CONTRIBUTED"
-            
-            draw.text((lx+120, cy+70), stats_final, font=get_high_impact_font(40), fill=PALETTE['text_dim'], anchor='lm')
-            cy += 200
-
-        # === RIGHT PANEL (TEAM Y - RED/ORANGE) ===
-        rx = WIDTH - PAD_X - PANEL_W
-        draw_cinematic_panel(img, rx, PANEL_Y, PANEL_W, PANEL_H, PALETTE['ty_metal'], PALETTE['ty_plasma'], PALETTE['ty_glow'])
-
-        # Team Y Header & Plasma Score
-        draw.text((rx + 80, PANEL_Y + 70), t2.name[:18].upper(), font=get_high_impact_font(70), fill=PALETTE['text_bright'], anchor='lm')
-        create_plasma_text(img, rx + PANEL_W - 200, PANEL_Y + 70, f"{t2.score}/{t2.wickets}", get_high_impact_font(130), PALETTE['ty_plasma'], PALETTE['ty_glow'])
-        
-        # Content Section Y
-        draw.rectangle([(rx+80, content_y), (rx+80+20, content_y+60)], fill=PALETTE['ty_plasma'])
-        draw.text((rx + 120, content_y+30), "KEY PERFORMERS", font=get_high_impact_font(50), fill=PALETTE['ty_plasma'], anchor='lm')
-
-        top_players_t2 = sorted(t2.players, key=lambda p: p.runs + p.wickets*20, reverse=True)[:3]
-        cy = content_y + 150
-        for p in top_players_t2:
-            draw.text((rx+120, cy), p.first_name[:20].upper(), font=get_high_impact_font(60), fill=PALETTE['text_bright'], anchor='lm')
-            stats_txt = []
-            if p.runs > 0: stats_txt.append(f"RUNS: {p.runs}")
-            if p.wickets > 0: stats_txt.append(f"WKTS: {p.wickets}")
-            stats_final = " | ".join(stats_txt) if stats_txt else "CONTRIBUTED"
-            draw.text((rx+120, cy+70), stats_final, font=get_high_impact_font(40), fill=PALETTE['text_dim'], anchor='lm')
-            cy += 200
-
-        # --- FOOTER: THE VICTORY BANNER ---
-        fy = 1750
-        fh = 300
-        
-        # Calculate Result
+        # Determine Winner Object for highlighting
         if t2.score >= match.target:
-            margin = len(t2.players) - 1 - t2.wickets
-            res_txt = f"{winner_name.upper()} DOMINATES BY {margin} WICKETS!"
+            win_team, lose_team = t2, t1
         else:
-            margin = t1.score - t2.score
-            res_txt = f"{winner_name.upper()} DEFENDS BY {margin} RUNS!"
+            win_team, lose_team = t1, t2
             
-        # Molten Gold Banner Background
-        banner_rect = [(PAD_X, fy), (WIDTH-PAD_X, fy+fh)]
-        draw.rectangle(banner_rect, fill=PALETTE['gold_metal'])
+        card_y = 350
+        card_h = 350
+        card_w = 1200
+        cx = WIDTH // 2
         
-        # Gold Plasma Borders (Top and Bottom with intense glow)
-        for y_pos in [fy, fy+fh]:
-            # Glow
-            glow_line = Image.new('RGBA', img.size, (0,0,0,0))
-            ImageDraw.Draw(glow_line).line([(PAD_X, y_pos), (WIDTH-PAD_X, y_pos)], fill=PALETTE['gold_glow']+(255,), width=30)
-            glow_line = glow_line.filter(ImageFilter.GaussianBlur(30))
-            img.alpha_composite(glow_line)
-            # Core line
-            draw.line([(PAD_X, y_pos), (WIDTH-PAD_X, y_pos)], fill=PALETTE['gold_plasma'], width=8)
+        def draw_score_card(y_pos, team, is_winner):
+            bg_col = (30, 35, 45, 240) # Dark Glass
+            border_col = C_GOLD if is_winner else C_SILVER
+            
+            # Card Body
+            overlay = Image.new('RGBA', (WIDTH, HEIGHT), (0,0,0,0))
+            d_over = ImageDraw.Draw(overlay)
+            d_over.rounded_rectangle([cx - card_w//2, y_pos, cx + card_w//2, y_pos + card_h], radius=20, fill=bg_col)
+            d_over.rounded_rectangle([cx - card_w//2, y_pos, cx + card_w//2, y_pos + card_h], radius=20, outline=border_col, width=4)
+            
+            # Team Name Strip
+            strip_col = C_WINNER_BG if is_winner else C_LOSE_BG
+            d_over.rounded_rectangle([cx - card_w//2 + 10, y_pos + 10, cx - card_w//2 + 30, y_pos + card_h - 10], radius=10, fill=strip_col)
+            
+            img.alpha_composite(overlay)
+            
+            # Content
+            # Team Name
+            t_col = C_GOLD if is_winner else C_SILVER
+            draw.text((cx - card_w//2 + 60, y_pos + 60), team.name.upper(), font=f_title, fill=t_col, anchor="lm")
+            
+            # Score
+            score_txt = f"{team.score}/{team.wickets}"
+            draw.text((cx + card_w//2 - 60, y_pos + 60), score_txt, font=f_mega, fill=(255,255,255), anchor="rm")
+            
+            # Status
+            status = "WINNER 🏆" if is_winner else "RUNNER UP"
+            draw.text((cx - card_w//2 + 60, y_pos + 140), status, font=f_body, fill=strip_col, anchor="lm")
+            
+            # Top Performer (Mini)
+            best_p = max(team.players, key=lambda p: p.runs + p.wickets*20)
+            perf_txt = f"MVP: {best_p.first_name} ({best_p.runs}R / {best_p.wickets}W)"
+            draw.text((cx - card_w//2 + 60, y_pos + 250), perf_txt, font=f_stat, fill=(200, 200, 200), anchor="lm")
 
-        # Result Text as massive plasma
-        create_plasma_text(img, WIDTH//2, fy + fh//2, res_txt, get_high_impact_font(140), PALETTE['gold_plasma'], PALETTE['gold_glow'])
+        # Draw Cards
+        draw_score_card(card_y, win_team, True)
+        draw_score_card(card_y + card_h + 50, lose_team, False)
 
-        # --- FINAL CINEMATIC POLISH ---
-        # Convert back to RGB for final effects
-        final_render = img.convert("RGB")
+        # --- 7. DETAILED ANALYSIS (GRID) ---
+        grid_y = card_y + (card_h * 2) + 150
         
-        # Apply Chromatic Aberration (The professional lens look)
-        # Note: This is computationally expensive on 4K, but essential for "Super Quality"
-        final_render = apply_chromatic_aberration(final_render, shift_amount=8)
+        # Grid Title
+        draw.text((cx, grid_y - 60), "PERFORMANCE ANALYSIS", font=f_head, fill=(255,255,255), anchor="mm")
+        
+        # Draw 2 columns of players
+        col_w = 550
+        start_x_left = cx - col_w - 20
+        start_x_right = cx + 20
+        
+        def draw_stat_row(sx, sy, label, val):
+            draw.rectangle([sx, sy, sx+col_w, sy+80], fill=(20, 20, 25, 200))
+            draw.text((sx+20, sy+40), label, font=f_body, fill=(180, 180, 180), anchor="lm")
+            draw.text((sx+col_w-20, sy+40), str(val), font=f_stat, fill=C_GOLD, anchor="rm")
+            
+        # Left Col: Batting Stats (Highest Run Scorer)
+        top_scorer = max(match.players.values(), key=lambda x: x['runs'])
+        draw_stat_row(start_x_left, grid_y, "ORANGE CAP", f"{top_scorer['runs']} ({top_scorer['first_name'][:10]})")
+        
+        # Right Col: Bowling (Most Wickets - simulated)
+        # Since we might not track wickets per bowler strictly in `match.players`, 
+        # let's show Total Boundaries instead for the match
+        total_4s = sum(p['fours'] for p in match.players.values())
+        total_6s = sum(p['sixes'] for p in match.players.values())
+        
+        draw_stat_row(start_x_right, grid_y, "TOTAL SIXES", str(total_6s))
+        draw_stat_row(start_x_left, grid_y + 100, "TOTAL FOURS", str(total_4s))
+        
+        # Strike Rate King
+        best_sr_p = max(match.players.values(), key=lambda x: (x['runs']/x['balls']) if x['balls']>0 else 0)
+        sr_val = int((best_sr_p['runs']/best_sr_p['balls'])*100) if best_sr_p['balls']>0 else 0
+        draw_stat_row(start_x_right, grid_y + 100, "HIGHEST SR", f"{sr_val} ({best_sr_p['first_name'][:8]})")
 
-        # Add subtle film grain/noise for texture integration
-        noise = Image.effect_noise((WIDTH, HEIGHT), 20).convert('RGB')
-        final_render = ImageChops.blend(final_render, noise, 0.05)
+        # --- 8. FOOTER (WINNER BANNER) ---
+        footer_y = HEIGHT - 300
+        
+        # Result Text
+        if t2.score >= match.target:
+            res_txt = f"{winner_name.upper()} WINS BY {len(t2.players) - 1 - t2.wickets} WICKETS"
+        elif t1.score > t2.score:
+            res_txt = f"{winner_name.upper()} WINS BY {t1.score - t2.score} RUNS"
+        else:
+            res_txt = "MATCH TIED"
+            
+        # Giant Banner
+        draw.rectangle([0, footer_y, WIDTH, footer_y + 200], fill=C_WINNER_BG)
+        draw.text((cx, footer_y + 100), res_txt, font=f_title, fill=(0,0,0), anchor="mm")
+        
+        # Copyright
+        draw.text((cx, HEIGHT - 50), "CRICOVERSE CHAMPIONSHIP SERIES • OFFICIAL RESULT", font=f_body, fill=(100, 100, 100), anchor="mm")
 
-        # Save high quality
+        # --- 9. FINAL POLISH ---
+        # Add cinematic noise
+        noise = Image.effect_noise((WIDTH//4, HEIGHT//4), 15).resize((WIDTH, HEIGHT)).convert('RGBA')
+        img = ImageChops.blend(img, noise, 0.05)
+        
+        # Sharpen
+        img = img.filter(ImageFilter.SHARPEN)
+        
         bio = BytesIO()
-        # Using JPEG with high quality for complex photographic textures (smaller size than PNG at 4K)
-        final_render.save(bio, 'JPEG', quality=95, subsampling=0) 
+        img.save(bio, 'JPEG', quality=95)
         bio.seek(0)
         return bio
 
     except Exception as e:
-        print(f"Cinematic V8 Error: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -11363,15 +11807,22 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         team = next((t for t in auction.teams.values() if t.bidder_id == user_id), None)
         team_name = next((n for n, t in auction.teams.items() if t.bidder_id == user_id), None)
         
-        # Check if auctioneer is assisting
+        # Check if auctioneer is assisting OR if user is an assisted bidder
         if not team:
             # Check if user is auctioneer and has assist mode enabled for any team
-            if user_id == auction.auctioneer_id and context.args and len(context.args) >= 2:
-                # Format: /bid [amount] [team_name] or check assist mode
+            if user_id == auction.auctioneer_id:
                 for t_name, t_obj in auction.teams.items():
                     if auction.assist_mode.get(t_name):
                         team_name = t_name
                         team = t_obj
+                        break
+            
+            # NEW: Check if user is an assisted bidder (can bid for their own team when assist mode is on)
+            if not team and hasattr(auction, 'assisted_bidders'):
+                for t_name, bidder_id in auction.assisted_bidders.items():
+                    if bidder_id == user_id and auction.assist_mode.get(t_name):
+                        team_name = t_name
+                        team = auction.teams[t_name]
                         break
             
             if not team:
@@ -11662,7 +12113,49 @@ async def assist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += "📋 <b>Usage:</b>\n<code>/assist [team_name]</code>"
         await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
         return
-    # Toggle Assist Mode
+    # Method 1: Reply to user + team name (NEW FEATURE)
+    if update.message.reply_to_message and context.args:
+        team_name = " ".join(context.args)
+        target_user = update.message.reply_to_message.from_user
+        
+        if team_name not in auction.teams:
+            await update.message.reply_text(
+                "❌ <b>TEAM NOT FOUND!</b>\n\n"
+                "Please check the team name and try again.",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        
+        # Initialize assisted_bidders if not exists
+        if not hasattr(auction, 'assisted_bidders'):
+            auction.assisted_bidders = {}
+        
+        current = auction.assist_mode.get(team_name, False)
+        auction.assist_mode[team_name] = not current
+        
+        # Store bidder ID who can also bid
+        if not current:
+            auction.assisted_bidders[team_name] = target_user.id
+        else:
+            if team_name in auction.assisted_bidders:
+                del auction.assisted_bidders[team_name]
+        
+        status = "ENABLED" if not current else "DISABLED"
+        emoji = "✅" if not current else "❌"
+        target_tag = f"<a href='tg://user?id={target_user.id}'>{target_user.first_name}</a>"
+        
+        await update.message.reply_text(
+            f"{emoji} <b>ASSIST MODE {status}!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🏏 <b>Team:</b> {team_name}\n"
+            f"👤 <b>Bidder:</b> {target_tag}\n\n"
+            f"{'🎤 Auctioneer can bid on their behalf!\n👤 Bidder can also bid using /bid [amount]!' if not current else '❌ Assist mode turned off.'}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    # Method 2: Just team name (backward compatibility)
     team_name = " ".join(context.args)
     if team_name not in auction.teams:
         await update.message.reply_text(
@@ -11705,7 +12198,7 @@ async def aucsummary_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             msg += "<b>Squad:</b>\n"
             for p in team.players:
                 msg += f" • {p['player_name']} (💰{p['price']})\n"
-            msg += "\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            msg += "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
     msg += f"📊 <b>Players in Pool:</b> {len(auction.player_pool)}\n"
     msg += f"❌ <b>Unsold Players:</b> {len(auction.unsold_players)}"
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
@@ -14611,5 +15104,4 @@ if __name__ == "__main__":
     main()
 else:
     # Agar ye file import ho rahi hai, tab bhi fonts check karo
-
     download_fonts()
