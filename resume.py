@@ -1,41 +1,35 @@
 """
 CRICOVERSE - Professional Hand Cricket Telegram Bot
 A feature-rich, group-based Hand Cricket game engine
-Single file implementation - Part 1 of 10
+Fixed version - No circular imports
 """
 
+# ═══════════════════════════════════════════════════════════════
+# STEP 1: Import all standard libraries first
+# ═══════════════════════════════════════════════════════════════
 import logging
-
-# Configure logging FIRST
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-
-logger = logging.getLogger(__name__)
-
-# Now import everything else
 import asyncio
 import random
 import math
 import time
 import json
-import sqlite3  # <--- New for SQL
-import shutil   # <--- New for Backup
+import sqlite3
+import shutil
 import os
-import html  # <--- Add this at the top with other imports
+import html
+import io
+import requests
 from asyncio import Lock
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set, Tuple
 from collections import defaultdict
 from enum import Enum
-from collections import defaultdict
-from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageChops
-import io
-import requests
-
-from PIL import ImageOps
 from io import BytesIO
+
+# ═══════════════════════════════════════════════════════════════
+# STEP 2: Import third-party libraries
+# ═══════════════════════════════════════════════════════════════
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageChops, ImageOps
 
 from telegram import (
     Update, 
@@ -56,13 +50,16 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 from telegram.error import TelegramError, Forbidden
 
-try:
-    FONT_PATH = "arial.ttf" 
-    BOLD_FONT_PATH = "ARIBLO.ttf"
-except:
-    FONT_PATH = None # Fallback
+# ═══════════════════════════════════════════════════════════════
+# STEP 3: Configure logging AFTER all imports
+# ═══════════════════════════════════════════════════════════════
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# CRITICAL: Set your bot token and owner ID here
+
 BOT_TOKEN = "8428604292:AAFkogxA9yUKMSO9uhPX-9s0DjBKzVceW3U"
 OWNER_ID = 7460266461  # Replace with your Telegram user ID
 SECOND_APPROVER_ID = 7343683772 
@@ -74,6 +71,9 @@ DB_PATH = "resume1.db"
 
 command_locks: Dict[int, Lock] = defaultdict(Lock)  # Per-group command lock
 processing_commands: Dict[int, bool] = defaultdict(bool)
+last_command_time: Dict[int, float] = defaultdict(float)
+COMMAND_TIMEOUT = 5.0
+POWERED_USERS: Set[int] = set()  # Users with broadcast + groupapprove permissions
 
 # Game Constants
 class GamePhase(Enum):
@@ -177,6 +177,48 @@ class Auction:
         
         # UI
         self.main_message_id: Optional[int] = None
+
+
+
+# ═══════════════════════════════════════════════════════════════
+# LOCK MANAGEMENT HELPERS - Fix for Multiple GC Delay
+# ═══════════════════════════════════════════════════════════════
+
+async def acquire_command_lock(group_id: int, timeout: float = 10.0) -> bool:
+    """Try to acquire command lock with timeout"""
+    lock = command_locks[group_id]
+    try:
+        await asyncio.wait_for(lock.acquire(), timeout=timeout)
+        last_command_time[group_id] = time.time()
+        return True
+    except asyncio.TimeoutError:
+        logger.warning(f"Command lock timeout for group {group_id}")
+        return False
+
+
+def release_command_lock(group_id: int):
+    """Release command lock for a group"""
+    lock = command_locks[group_id]
+    if lock.locked():
+        lock.release()
+
+
+async def cleanup_stale_locks():
+    """Clean up locks that have been held too long"""
+    current_time = time.time()
+    for group_id, last_time in list(last_command_time.items()):
+        if current_time - last_time > COMMAND_TIMEOUT:
+            logger.warning(f"Cleaning up stale lock for group {group_id}")
+            release_command_lock(group_id)
+            del last_command_time[group_id]
+
+
+async def start_lock_cleanup_task():
+    """Background task to cleanup stale locks"""
+    while True:
+        await cleanup_stale_locks()
+        await asyncio.sleep(60)  # Check every minute
+
 
 # GIF URLs for match events
 GIFS = {
@@ -12636,6 +12678,101 @@ async def h2h_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 # Owner/Admin commands
+
+
+# ═══════════════════════════════════════════════════════════════
+# POWER MANAGEMENT COMMANDS
+# ═══════════════════════════════════════════════════════════════
+
+async def power_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Give broadcast + groupapprove power to a user"""
+    user_id = update.effective_user.id
+    
+    if user_id != OWNER_ID:
+        await update.message.reply_text("❌ Only owner can use this command!")
+        return
+    
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text(
+            "❌ *Usage:* `/power <user_id>`\n\n"
+            "Give broadcast and groupapprove power to a user.\n\n"
+            "Example: `/power 123456789`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    try:
+        target_user_id = int(context.args[0])
+        POWERED_USERS.add(target_user_id)
+        
+        await update.message.reply_text(
+            f"✅ *Power Granted!*\n\n"
+            f"👤 User ID: `{target_user_id}`\n"
+            f"⚡ Powers: Broadcast + Group Approve\n\n"
+            f"Total powered users: {len(POWERED_USERS)}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        logger.info(f"Power granted to {target_user_id} by {user_id}")
+    except ValueError:
+        await update.message.reply_text("❌ Invalid user ID!")
+
+
+async def rmpower_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remove power from a user"""
+    user_id = update.effective_user.id
+    
+    if user_id != OWNER_ID:
+        await update.message.reply_text("❌ Only owner can use this command!")
+        return
+    
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text(
+            "❌ *Usage:* `/rmpower <user_id>`\n\n"
+            "Remove broadcast and groupapprove power from a user.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    try:
+        target_user_id = int(context.args[0])
+        if target_user_id in POWERED_USERS:
+            POWERED_USERS.remove(target_user_id)
+            await update.message.reply_text(
+                f"✅ *Power Removed!*\n\n"
+                f"User ID: `{target_user_id}`\n"
+                f"Remaining powered users: {len(POWERED_USERS)}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            logger.info(f"Power removed from {target_user_id} by {user_id}")
+        else:
+            await update.message.reply_text("❌ User doesn't have power!")
+    except ValueError:
+        await update.message.reply_text("❌ Invalid user ID!")
+
+
+async def listpower_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all powered users"""
+    user_id = update.effective_user.id
+    
+    if user_id != OWNER_ID:
+        await update.message.reply_text("❌ Only owner can use this command!")
+        return
+    
+    if not POWERED_USERS:
+        await update.message.reply_text("📋 No powered users yet!\n\nUse /power <user_id> to add one.")
+        return
+    
+    powered_list = "\n".join([f"  • `{uid}`" for uid in sorted(POWERED_USERS)])
+    await update.message.reply_text(
+        f"👑 *Powered Users* ({len(POWERED_USERS)}):\n\n"
+        f"{powered_list}\n\n"
+        f"These users can use:\n"
+        f"  ✓ /broadcast commands\n"
+        f"  ✓ /groupapprove command",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Broadcast via FORWARD (Not Copy)
@@ -12643,7 +12780,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Bot will forward that exact message to all Groups & DMs
     """
     user = update.effective_user
-    if user.id != OWNER_ID: 
+    if user.id != OWNER_ID and user.id not in POWERED_USERS:
         return
 
     # ✅ Check if replied to a message
@@ -13566,6 +13703,74 @@ async def create_prediction_poll(context: ContextTypes.DEFAULT_TYPE, group_id: i
             
     except Exception as e:
         logger.error(f"Error creating poll: {e}")
+
+
+
+# ═══════════════════════════════════════════════════════════════
+# SUPER OVER AUTO-TRIGGER FUNCTION
+# ═══════════════════════════════════════════════════════════════
+
+async def check_and_trigger_super_over(update, context, group_id, match):
+    """Check if match is draw and trigger super over automatically"""
+    
+    # Only check after second innings
+    if match.innings != 2:
+        return False
+    
+    # Get team scores
+    team_x_total = match.team_x.score if hasattr(match.team_x, 'score') else match.team_x_total_runs
+    team_y_total = match.team_y.score if hasattr(match.team_y, 'score') else match.team_y_total_runs
+    
+    # Check if scores are equal (DRAW)
+    if team_x_total != team_y_total:
+        return False
+    
+    # IT'S A DRAW! Trigger Super Over
+    logger.info(f"Match tied in group {group_id}: {team_x_total} - {team_y_total}")
+    
+    try:
+        await context.bot.send_animation(
+            chat_id=group_id,
+            animation="CgACAgUAAyEFAATEuZi2AAIFvGlL8zO3j9sAAWMLd_N0LVWTjVPHnAACrBsAAunGYFZlcYBvYMHr9TYE",
+            caption=(
+                "🏏 *MATCH TIED!* 🏏\n\n"
+                "🔥 *SUPER OVER ACTIVATED!* 🔥\n\n"
+                f"Both teams scored *{team_x_total} runs*!\n"
+                "Get ready for the most exciting over in cricket! 🎯\n\n"
+                "📋 *Super Over Rules:*\n"
+                "  • Each team plays 1 over (6 balls)\n"
+                "  • Maximum 2 wickets allowed\n"
+                "  • Highest score wins! 🏆\n\n"
+                "⏳ Starting in 5 seconds..."
+            ),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error sending super over announcement: {e}")
+    
+    # Update match phase to SUPER_OVER
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """UPDATE matches 
+            SET phase = ?
+            WHERE group_id = ?""",
+            (GamePhase.SUPER_OVER.value, group_id)
+        )
+        conn.commit()
+        conn.close()
+        
+        # Update in-memory match object
+        match.phase = GamePhase.SUPER_OVER
+        
+    except Exception as e:
+        logger.error(f"Error updating match to super over: {e}")
+    
+    # Dramatic pause
+    await asyncio.sleep(5)
+    
+    return True  # Super over triggered
 
 async def handle_group_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -15005,6 +15210,9 @@ def main():
     
     # ================== OWNER / HOST CONTROLS ==================
     application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(CommandHandler("power", power_command))
+    application.add_handler(CommandHandler("rmpower", rmpower_command))
+    application.add_handler(CommandHandler("listpower", listpower_command))
     application.add_handler(CommandHandler("broadcastpin", broadcastpin_command))
     application.add_handler(CommandHandler("broadcastdm", broadcastdm_command)) 
     application.add_handler(CommandHandler("botstats", botstats_command))
@@ -15101,7 +15309,40 @@ def main():
 
 
 if __name__ == "__main__":
+    import os
+    from aiohttp import web
+    
     download_fonts()
+    
+    # Get PORT from environment (required for deployment platforms like Render/Railway)
+    PORT = int(os.environ.get('PORT', 8080))
+    
+    async def health_check(request):
+        """Health check endpoint for deployment platform"""
+        return web.Response(text="Cricoverse Bot is running!")
+    
+    async def start_web_server():
+        """Start HTTP server to satisfy port binding requirement"""
+        app = web.Application()
+        app.router.add_get('/', health_check)
+        app.router.add_get('/health', health_check)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', PORT)
+        await site.start()
+        logger.info(f"✅ Health check server started on port {PORT}")
+    
+    # Create event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # Start web server in background
+    loop.create_task(start_web_server())
+    
+    # Start background lock cleanup task
+    loop.create_task(start_lock_cleanup_task())
+    
+    # Run main bot (this will block)
     main()
 else:
     # Agar ye file import ho rahi hai, tab bhi fonts check karo
